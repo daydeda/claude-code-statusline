@@ -1,383 +1,340 @@
 #!/usr/bin/env bash
+# claude-code-statusline: https://github.com/daydeda/claude-code-statusline
+#
+# Claude Code pipes a JSON description of the session on stdin; this script
+# prints a 4-line status line. Works with the bash 3.2 that ships on macOS.
 set -u
-INPUT="$(cat)"
-export INPUT_JSON="$INPUT"
 
-# Terminal width for flex-spacer math. Honors STATUSLINE_COLS env override
-# (used by parity tests); otherwise tries tput, finally falls back to 80.
-STATUSLINE_COLS=${STATUSLINE_COLS:-$(tput cols 2>/dev/null || echo 80)}
-
-# Visible-character length: strip CSI SGR sequences then count chars.
-# Wide glyphs (emoji, CJK) count as 1 column — same simplification as the
-# interpret backend uses.
-__visible_len() {
-  printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g' | awk '{ printf "%s", length($0) }'
-}
-
-__repeat_char() {
-  local ch="$1" n="$2" out=""
-  if [ "$n" -le 0 ]; then printf ''; return; fi
-  local i=0
-  while [ "$i" -lt "$n" ]; do out+="$ch"; i=$((i+1)); done
-  printf '%s' "$out"
-}
-
-__sgr() { printf '\033[%sm' "$1"; }
-__reset() { printf '\033[0m'; }
-
-if command -v jq >/dev/null 2>&1; then
-  __field() {
-    printf '%s' "$INPUT_JSON" | jq -r --arg p "$1" '
-      ($p | split(".")) as $parts
-      | reduce $parts[] as $k (.; if type == "object" and has($k) then .[$k] else null end)
-      | if . == null then "" else (if type == "string" then . else tostring end) end
-    ' 2>/dev/null
-  }
-else
-  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
-    __PY=python3
-  elif command -v python >/dev/null 2>&1; then
-    __PY=python
-  else
-    __PY=""
-  fi
-  __field() {
-    if [ -z "$__PY" ]; then printf ''; return; fi
-    PATH_ARG="$1" "$__PY" - <<'PYEOF' 2>/dev/null
-import json, os
-d = json.loads(os.environ.get('INPUT_JSON','{}') or '{}')
-p = os.environ.get('PATH_ARG','')
-cur = d
-for part in p.split('.'):
-    if isinstance(cur, dict) and part in cur:
-        cur = cur[part]
-    else:
-        cur = None
-        break
-if cur is None:
-    print('', end='')
-elif isinstance(cur, bool):
-    print('true' if cur else 'false', end='')
-else:
-    print(cur, end='')
-PYEOF
-  }
+# ---------------------------------------------------------------- settings
+# Read STATUSLINE_* keys from the config file. Environment variables win.
+# See statusline.conf.example for every option.
+__CONF="${STATUSLINE_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.conf}"
+if [ -f "$__CONF" ]; then
+  while IFS= read -r __line || [ -n "$__line" ]; do
+    __line="${__line%%#*}"
+    __line="$(printf '%s' "$__line" | tr -d ' \t"'\''')"
+    case "$__line" in
+      STATUSLINE_THEME=*|STATUSLINE_BAR=*|STATUSLINE_CLOCK=*|STATUSLINE_ANIMATE=*|STATUSLINE_SHOW_*=*) ;;
+      *) continue ;;
+    esac
+    __key="${__line%%=*}"
+    case "$__key" in *[!A-Z_]*) continue ;; esac
+    if [ -z "${!__key+x}" ]; then printf -v "$__key" '%s' "${__line#*=}"; fi
+  done < "$__CONF"
 fi
+THEME="${STATUSLINE_THEME:-default}"
+BAR_STYLE="${STATUSLINE_BAR:-blocks}"
+CLOCK="${STATUSLINE_CLOCK:-12}"
+ANIMATE="${STATUSLINE_ANIMATE:-1}"
+SHOW_FOLDER="${STATUSLINE_SHOW_FOLDER:-1}"
+SHOW_GIT="${STATUSLINE_SHOW_GIT:-1}"
+SHOW_SESSION="${STATUSLINE_SHOW_SESSION:-1}"
+SHOW_LIMITS="${STATUSLINE_SHOW_LIMITS:-1}"
+SHOW_PACE="${STATUSLINE_SHOW_PACE:-1}"
 
-__basename() { local s="$1"; printf '%s' "${s##*/}"; }
-__compact() {
-  local s="$1"
-  if [ -z "$s" ]; then printf ''; return; fi
-  # Use awk so we don't depend on bash arrays. Split on '/', take the first
-  # char of every segment except the last; preserve a leading slash by
-  # emitting an empty initial element when the path starts with '/'.
-  printf '%s' "$s" | awk 'BEGIN{FS="/"} {
-    out=""
-    for (i=1; i<=NF; i++) {
-      if (i==NF) { piece = $i }
-      else if ($i == "") { piece = "" }
-      else { piece = substr($i, 1, 1) }
-      if (i==1) { out = piece } else { out = out "/" piece }
-    }
-    printf "%s", out
-  }'
+# ------------------------------------------------------------------ themes
+# Colors are 24-bit "R;G;B". RAINBOW drives the xhigh/max effort animation.
+case "$THEME" in
+  catppuccin)
+    C_MODEL='203;166;247'; C_FOLDER='116;199;236'; C_OK='166;227;161'
+    C_MED='249;226;175';   C_WARN='250;179;135';   C_BAD='243;139;168'
+    C_MUTED='127;132;156'
+    RAINBOW=('243;139;168' '250;179;135' '249;226;175' '166;227;161' '137;220;235' '137;180;250' '203;166;247') ;;
+  dracula)
+    C_MODEL='189;147;249'; C_FOLDER='139;233;253'; C_OK='80;250;123'
+    C_MED='241;250;140';   C_WARN='255;184;108';   C_BAD='255;85;85'
+    C_MUTED='98;114;164'
+    RAINBOW=('255;85;85' '255;184;108' '241;250;140' '80;250;123' '139;233;253' '189;147;249' '255;121;198') ;;
+  nord)
+    C_MODEL='136;192;208'; C_FOLDER='129;161;193'; C_OK='163;190;140'
+    C_MED='235;203;139';   C_WARN='208;135;112';   C_BAD='191;97;106'
+    C_MUTED='97;110;136'
+    RAINBOW=('191;97;106' '208;135;112' '235;203;139' '163;190;140' '143;188;187' '129;161;193' '180;142;173') ;;
+  gruvbox)
+    C_MODEL='211;134;155'; C_FOLDER='142;192;124'; C_OK='184;187;38'
+    C_MED='250;189;47';    C_WARN='254;128;25';    C_BAD='251;73;52'
+    C_MUTED='146;131;116'
+    RAINBOW=('251;73;52' '254;128;25' '250;189;47' '184;187;38' '142;192;124' '131;165;152' '211;134;155') ;;
+  tokyonight)
+    C_MODEL='187;154;247'; C_FOLDER='125;207;255'; C_OK='158;206;106'
+    C_MED='224;175;104';   C_WARN='255;158;100';   C_BAD='247;118;142'
+    C_MUTED='86;95;137'
+    RAINBOW=('247;118;142' '255;158;100' '224;175;104' '158;206;106' '125;207;255' '122;162;247' '187;154;247') ;;
+  *)
+    C_MODEL='222;131;32';  C_FOLDER='0;190;255';   C_OK='157;204;47'
+    C_MED='255;230;0';     C_WARN='255;165;0';     C_BAD='255;72;72'
+    C_MUTED='132;132;131'
+    RAINBOW=('255;72;72' '255;165;0' '255;230;0' '157;204;47' '0;190;255' '120;100;255' '220;90;255') ;;
+esac
+
+case "$BAR_STYLE" in
+  shade) BAR_ON='▓'; BAR_OFF='░' ;;
+  dots)  BAR_ON='●'; BAR_OFF='○' ;;
+  slim)  BAR_ON='▰'; BAR_OFF='▱' ;;
+  line)  BAR_ON='━'; BAR_OFF='─' ;;
+  *)     BAR_ON='█'; BAR_OFF='░' ;;
+esac
+
+# ------------------------------------------------------------------- input
+# Pull every field we need in a single jq (or python) call.
+INPUT="$(cat)"
+if command -v jq >/dev/null 2>&1; then
+  __vars="$(printf '%s' "$INPUT" | jq -r '
+    def s: if . == null then "" else tostring end;
+    "J_MODEL=\(.model.display_name | s | @sh)",
+    "J_THINKING=\(.thinking.enabled | s | @sh)",
+    "J_EFFORT=\(.effort.level | s | @sh)",
+    "J_FAST=\(.fast_mode | s | @sh)",
+    "J_DIR=\((.workspace.current_dir // .cwd) | s | @sh)",
+    "J_CTX=\(.context_window.used_percentage | s | @sh)",
+    "J_ADDED=\(.cost.total_lines_added | s | @sh)",
+    "J_REMOVED=\(.cost.total_lines_removed | s | @sh)",
+    "J_DURATION=\(.cost.total_duration_ms | s | @sh)",
+    "J_COST=\(.cost.total_cost_usd | s | @sh)",
+    "J_5H=\(.rate_limits.five_hour.used_percentage | s | @sh)",
+    "J_5H_RESET=\(.rate_limits.five_hour.resets_at | s | @sh)",
+    "J_7D=\(.rate_limits.seven_day.used_percentage | s | @sh)",
+    "J_7D_RESET=\(.rate_limits.seven_day.resets_at | s | @sh)"
+  ' 2>/dev/null)"
+else
+  __vars="$(INPUT_JSON="$INPUT" python3 - <<'PYEOF' 2>/dev/null
+import json, os, shlex
+try:
+    d = json.loads(os.environ.get('INPUT_JSON') or '{}')
+except Exception:
+    d = {}
+def get(*path):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return ''
+        cur = cur[k]
+    if cur is None:
+        return ''
+    if isinstance(cur, bool):
+        return 'true' if cur else 'false'
+    return str(cur)
+fields = {
+    'J_MODEL': get('model', 'display_name'), 'J_THINKING': get('thinking', 'enabled'),
+    'J_EFFORT': get('effort', 'level'), 'J_FAST': get('fast_mode'),
+    'J_DIR': get('workspace', 'current_dir') or get('cwd'),
+    'J_CTX': get('context_window', 'used_percentage'),
+    'J_ADDED': get('cost', 'total_lines_added'), 'J_REMOVED': get('cost', 'total_lines_removed'),
+    'J_DURATION': get('cost', 'total_duration_ms'), 'J_COST': get('cost', 'total_cost_usd'),
+    'J_5H': get('rate_limits', 'five_hour', 'used_percentage'),
+    'J_5H_RESET': get('rate_limits', 'five_hour', 'resets_at'),
+    'J_7D': get('rate_limits', 'seven_day', 'used_percentage'),
+    'J_7D_RESET': get('rate_limits', 'seven_day', 'resets_at'),
 }
-__tildify() {
-  local s="$1"
-  local home="${HOME%/}"
-  if [ -n "$home" ] && [[ "$s" == "$home"* ]]; then
-    printf '~%s' "${s#$home}"
-    return
-  fi
-  if [[ "$s" =~ ^/(Users|home)/[^/]+(.*)$ ]]; then
-    printf '~%s' "${BASH_REMATCH[2]}"
-    return
-  fi
-  printf '%s' "$s"
+for k, v in fields.items():
+    print('%s=%s' % (k, shlex.quote(v)))
+PYEOF
+)"
+fi
+J_MODEL='' J_THINKING='' J_EFFORT='' J_FAST='' J_DIR='' J_CTX='' J_ADDED='' J_REMOVED=''
+J_DURATION='' J_COST='' J_5H='' J_5H_RESET='' J_7D='' J_7D_RESET=''
+eval "$__vars"
+
+# STATUSLINE_CLOCK_OVERRIDE pins "now" for tests and preview rendering.
+NOW="${STATUSLINE_CLOCK_OVERRIDE:-$(date +%s)}"
+
+# ----------------------------------------------------------------- helpers
+fg() { printf '38;2;%s' "$1"; }
+emit() {
+  if [ -n "$1" ]; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi
 }
-__truncate() {
-  local s="$1" n="$2"
-  if [ "$n" -le 0 ] || [ "${#s}" -le "$n" ]; then printf '%s' "$s"; return; fi
-  if [ "$n" -le 1 ]; then printf '%s' "${s:0:$n}"; return; fi
-  printf '%s…' "${s:0:$((n-1))}"
+# Coerce "62.4", "" or garbage to a non-negative integer.
+int() {
+  local v="${1%%.*}"
+  case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
 }
-__cost_fmt() { printf '$%.*f' "$2" "$1"; }
-__dur_hms() {
-  local ms="$1" total h m s
-  total=$((ms/1000)); h=$((total/3600)); m=$(((total%3600)/60)); s=$((total%60))
-  if [ "$h" -gt 0 ]; then printf '%d:%02d:%02d' "$h" "$m" "$s"
-  else printf '%d:%02d' "$m" "$s"; fi
-}
-__dur_human() {
-  local ms="$1" total m s h mm
-  total=$((ms/1000))
-  if [ "$total" -lt 60 ]; then printf '%ds' "$total"; return; fi
-  m=$((total/60)); s=$((total%60))
-  if [ "$m" -lt 60 ]; then
-    if [ "$s" -gt 0 ]; then printf '%dm %ds' "$m" "$s"; else printf '%dm' "$m"; fi
-    return
-  fi
-  h=$((m/60)); mm=$((m%60))
-  if [ "$mm" -gt 0 ]; then printf '%dh %dm' "$h" "$mm"; else printf '%dh' "$h"; fi
-}
-__bar() {
-  local pct="$1" width="$2" filled="$3" empty="$4"
-  local p i n=0 e=0
-  p=${pct%.*}
-  [ -z "$p" ] && p=0
-  if [ "$p" -lt 0 ]; then p=0; fi
-  if [ "$p" -gt 100 ]; then p=100; fi
-  n=$(( (p * width + 50) / 100 ))
-  e=$((width - n))
-  local out=""
-  for ((i=0; i<n; i++)); do out+="$filled"; done
-  for ((i=0; i<e; i++)); do out+="$empty"; done
+bar() {
+  local p n i out=''
+  p="$(int "$1")"; [ "$p" -gt 100 ] && p=100
+  n=$(( (p * 10 + 50) / 100 ))
+  for ((i = 0; i < 10; i++)); do
+    if [ "$i" -lt "$n" ]; then out+="$BAR_ON"; else out+="$BAR_OFF"; fi
+  done
   printf '%s' "$out"
-}
-__git_branch() {
-  local cwd dir
-  cwd="$(__field workspace.current_dir)"
-  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
-  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
-    git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null
-  else
-    __field workspace.git_worktree
-  fi
-}
-__git_dirty() {
-  local cwd
-  cwd="$(__field workspace.current_dir)"
-  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
-  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
-    if [ -n "$(git -C "$cwd" status --porcelain 2>/dev/null)" ]; then printf '1'; else printf '0'; fi
-  else
-    printf '0'
-  fi
-}
-# Number of files with uncommitted changes (staged, unstaged or untracked).
-__git_changes() {
-  local cwd n
-  cwd="$(__field workspace.current_dir)"
-  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
-  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
-    n="$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-  fi
-  printf '%s' "$(__norm_int "${n:-0}")"
-}
-__emit() {
-  local style="$1" text="$2"
-  if [ -n "$style" ]; then __sgr "$style"; fi
-  printf '%s' "$text"
-  if [ -n "$style" ]; then __reset; fi
-}
-__norm_int() {
-  # Coerce a possibly-decimal/empty/garbage field value to a non-negative
-  # integer string. Used by token-display helpers.
-  local v="$1"
-  v="${v%%.*}"
-  case "$v" in
-    ''|*[!0-9]*) printf '0' ;;
-    *) printf '%s' "$v" ;;
-  esac
-}
-__fmt_token_compact() {
-  local n
-  n="$(__norm_int "$1")"
-  if [ "$n" -lt 1000 ]; then printf '%s' "$n"; return; fi
-  if [ "$n" -lt 1000000 ]; then
-    local whole=$((n / 1000))
-    local rem=$((n - whole * 1000))
-    local dec=$((rem / 100))
-    if [ "$dec" -eq 0 ]; then printf '%dk' "$whole"; else printf '%d.%dk' "$whole" "$dec"; fi
-    return
-  fi
-  local whole=$((n / 1000000))
-  local rem=$((n - whole * 1000000))
-  local dec=$((rem / 100000))
-  if [ "$dec" -eq 0 ]; then printf '%dM' "$whole"; else printf '%d.%dM' "$whole" "$dec"; fi
-}
-__fmt_token_full() {
-  local n
-  n="$(__norm_int "$1")"
-  printf '%s' "$n" | awk '{
-    s=$0; out=""; n=length(s)
-    while (n > 3) { out=","substr(s,n-2,3) out; n -= 3 }
-    out=substr(s,1,n) out
-    printf "%s", out
-  }'
-}
-__tokens_used() { __field 'context_window.total_input_tokens'; }
-__tokens_total() { __field 'context_window.context_window_size'; }
-__tokens_remaining() {
-  local u t
-  u="$(__norm_int "$(__tokens_used)")"
-  t="$(__norm_int "$(__tokens_total)")"
-  local r=$((t - u))
-  if [ "$r" -lt 0 ]; then r=0; fi
-  printf '%d' "$r"
-}
-__tokens_pct_int() {
-  local p="$(__field 'context_window.used_percentage')"
-  __norm_int "$p"
-}
-__tick() {
-  if [ -n "${STATUSLINE_CLOCK_OVERRIDE:-}" ]; then
-    printf '%s' "$STATUSLINE_CLOCK_OVERRIDE"
-  else
-    date +%s
-  fi
-}
-__rel_time() {
-  local target="$1"
-  if [ -z "$target" ]; then printf ''; return; fi
-  case "$target" in
-    ''|*[!0-9.-]*) printf ''; return ;;
-  esac
-  local t_int="${target%.*}"
-  if [ -z "$t_int" ] || [ "$t_int" = "-" ]; then printf ''; return; fi
-  local now diff h m s rem
-  now=$(__tick)
-  diff=$((t_int - now))
-  if [ "$diff" -le 0 ]; then printf ''; return; fi
-  if [ "$diff" -ge 86400 ]; then
-    h=$(((diff%86400)/3600))
-    if [ "$h" -gt 0 ]; then printf '%dd %dh' "$((diff/86400))" "$h"
-    else printf '%dd' "$((diff/86400))"; fi
-    return
-  fi
-  if [ "$diff" -lt 60 ]; then printf '%ds' "$diff"; return; fi
-  if [ "$diff" -lt 3600 ]; then
-    m=$((diff/60)); s=$((diff%60))
-    printf '%dm%02ds' "$m" "$s"; return
-  fi
-  h=$((diff/3600)); rem=$(((diff%3600)/60))
-  printf '%dh%02dm' "$h" "$rem"
 }
 # Format an epoch timestamp with date(1): BSD date first, then GNU date.
-__date_fmt() {
-  date -r "$1" "+$2" 2>/dev/null || date -d "@$1" "+$2" 2>/dev/null
+date_fmt() { date -r "$1" "+$2" 2>/dev/null || date -d "@$1" "+$2" 2>/dev/null; }
+# Countdown to a timestamp: "44s", "12m05s", "1h56m", "2d 7h".
+rel_time() {
+  local diff=$(( $(int "$1") - NOW ))
+  if [ "$diff" -le 0 ]; then return; fi
+  if [ "$diff" -ge 86400 ]; then
+    if [ $(( (diff % 86400) / 3600 )) -gt 0 ]; then
+      printf '%dd %dh' $((diff / 86400)) $(( (diff % 86400) / 3600 ))
+    else
+      printf '%dd' $((diff / 86400))
+    fi
+  elif [ "$diff" -ge 3600 ]; then printf '%dh%02dm' $((diff / 3600)) $(( (diff % 3600) / 60 ))
+  elif [ "$diff" -ge 60 ]; then printf '%dm%02ds' $((diff / 60)) $((diff % 60))
+  else printf '%ds' "$diff"; fi
 }
-# Friendly reset time: "today 5:32am", "tomorrow 1:00am" or "Fri 11:08am".
-__friendly_time() {
-  local t="${1%.*}" now day clock
-  case "$t" in ''|*[!0-9]*) printf ''; return ;; esac
-  now="$(__tick)"
-  case "$(__date_fmt "$t" '%Y%m%d')" in
-    "$(__date_fmt "$now" '%Y%m%d')") day='today' ;;
-    "$(__date_fmt "$((now + 86400))" '%Y%m%d')") day='tomorrow' ;;
-    *) day="$(__date_fmt "$t" '%a')"
-       # A week out lands on today's weekday; say "next Thu" to avoid confusion.
-       if [ "$day" = "$(__date_fmt "$now" '%a')" ]; then day="next $day"; fi ;;
+# "today 5:32am", "tomorrow 1:00am", "Fri 11:08am" or "next Thu 2:37am".
+friendly_time() {
+  local t day clock
+  t="$(int "$1")"
+  case "$(date_fmt "$t" '%Y%m%d')" in
+    "$(date_fmt "$NOW" '%Y%m%d')") day='today' ;;
+    "$(date_fmt $((NOW + 86400)) '%Y%m%d')") day='tomorrow' ;;
+    *) day="$(date_fmt "$t" '%a')"
+       # A week out lands on today's weekday; "next Thu" avoids confusion.
+       if [ "$day" = "$(date_fmt "$NOW" '%a')" ]; then day="next $day"; fi ;;
   esac
-  clock="$(__date_fmt "$t" '%I:%M%p' | tr '[:upper:]' '[:lower:]')"
-  printf '%s %s' "$day" "${clock#0}"
-}
-# Countdown plus reset time, e.g. "↻ 2d 7h → Fri 11:08am".
-__reset_info() {
-  local rel
-  rel="$(__rel_time "$1")"
-  [ -z "$rel" ] && return
-  printf '↻ %s → %s' "$rel" "$(__friendly_time "$1")"
-}
-# Usage color: green below 50%, orange from 50%, red from 80%.
-__pct_color() {
-  local p
-  p="$(__norm_int "$1")"
-  if [ "$p" -ge 80 ]; then printf '38;2;255;72;72'
-  elif [ "$p" -ge 50 ]; then printf '38;2;255;165;0'
-  else printf '38;2;157;204;47'; fi
-}
-# Effort colors: low green, medium yellow, high red, xhigh/max rainbow.
-# The rainbow shifts one step per second; with statusLine.refreshInterval=1
-# in settings.json it appears to flow across the text.
-__effort() {
-  local lvl="$1" i c n off
-  local rainbow=('255;72;72' '255;165;0' '255;230;0' '157;204;47' '0;190;255' '120;100;255' '220;90;255')
-  n=${#rainbow[@]}
-  off=$(( $(__tick) % n ))
-  case "$(printf '%s' "$lvl" | tr '[:upper:]' '[:lower:]')" in
-    low) __emit '3;38;2;157;204;47' "$lvl" ;;
-    medium) __emit '3;38;2;255;230;0' "$lvl" ;;
-    high) __emit '3;38;2;255;72;72' "$lvl" ;;
-    xhigh|max)
-      for ((i=0; i<${#lvl}; i++)); do
-        c="${rainbow[$(( (i - off + n * 100) % n ))]}"
-        __emit "1;3;38;2;$c" "${lvl:$i:1}"
-      done ;;
-    *) __emit '3' "$lvl" ;;
-  esac
-}
-# One meter row: "<label>  <bar>  <pct>%  <reset info>".
-# Args: label, percentage, bar char, color, reset timestamp (optional).
-__meter() {
-  local label="$1" pct="$2" ch="$3" color="$4" reset="${5:-}" info
-  __emit "1;$color" "$(printf '%-8s' "$label")"
-  __emit "$color" "$(__bar "$pct" 10 "$ch" '░')"
-  __emit "$color" "$(printf '  %3s%%' "$(__norm_int "$pct")")"
-  info="$(__reset_info "$reset")"
-  if [ -n "$info" ]; then __emit "$color" "  $info"; fi
-}
-
-# Current folder name: "~" for the home folder, otherwise the last path
-# segment, cut to 24 characters.
-__folder() {
-  local cwd
-  cwd="$(__field workspace.current_dir)"
-  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
-  cwd="${cwd%/}"
-  if [ -z "$cwd" ]; then return; fi
-  if [ "$cwd" = "${HOME%/}" ]; then printf '~'; return; fi
-  __truncate "$(__basename "$cwd")" 24
-}
-
-# Line 1: where you are. Model ▶ effort ▶ folder + git
-__v="$(__field 'model.display_name')"
-__emit '1;38;2;222;131;32;49' "$__v"
-if [ "$(__field 'thinking.enabled')" = 'true' ]; then
-  __emit '' ' ▶ '
-  __effort "$(__field 'effort.level')"
-fi
-if [ "$(__field 'fast_mode')" = 'true' ]; then
-  __emit '' ' '
-  __emit '48;2;140;0;0' '⚡fast'
-fi
-__dir="$(__folder)"
-__out="$(__git_branch)"
-if [ -n "$__dir" ] || [ -n "$__out" ]; then __emit '' ' ▶'; fi
-if [ -n "$__dir" ]; then __emit '1;38;2;0;190;255' " ⌂ $__dir"; fi
-if [ -n "$__out" ]; then
-  __emit '' " ⎇ $__out "
-  __n="$(__git_changes)"
-  if [ "$__n" -gt 0 ]; then
-    if [ "$__n" -eq 1 ]; then __emit '38;2;255;165;0' '● 1 change'
-    else __emit '38;2;255;165;0' "● $__n changes"; fi
+  if [ "$CLOCK" = 24 ]; then
+    clock="$(date_fmt "$t" '%H:%M')"
   else
-    __emit '38;2;157;204;47' '✓ clean'
+    clock="$(date_fmt "$t" '%I:%M%p' | tr '[:upper:]' '[:lower:]')"
+    clock="${clock#0}"
   fi
+  printf '%s %s' "$day" "$clock"
+}
+duration() {
+  local s=$(( $(int "$1") / 1000 ))
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm %ds' $((s / 60)) $((s % 60))
+  else printf '%dh %dm' $((s / 3600)) $(( (s % 3600) / 60 )); fi
+}
+# Green below 50%, orange from 50%, red from 80%.
+pct_color() {
+  local p; p="$(int "$1")"
+  if [ "$p" -ge 80 ]; then printf '%s' "$C_BAD"
+  elif [ "$p" -ge 50 ]; then printf '%s' "$C_WARN"
+  else printf '%s' "$C_OK"; fi
+}
+# From 90% the meter pulses: dim on odd seconds, bright on even ones.
+pulse() {
+  if [ "$ANIMATE" = 1 ] && [ "$(int "$1")" -ge 90 ] && [ $((NOW % 2)) -eq 1 ]; then
+    printf '2;'
+  fi
+}
+# Effort: low green, medium yellow, high red, xhigh/max a rainbow that
+# shifts one step per second (statusLine.refreshInterval=1 animates it).
+effort() {
+  local lvl="$1" n=${#RAINBOW[@]} off=0 i
+  [ "$ANIMATE" = 1 ] && off=$((NOW % n))
+  case "$(printf '%s' "$lvl" | tr '[:upper:]' '[:lower:]')" in
+    low)    emit "3;$(fg "$C_OK")" "$lvl" ;;
+    medium) emit "3;$(fg "$C_MED")" "$lvl" ;;
+    high)   emit "3;$(fg "$C_BAD")" "$lvl" ;;
+    xhigh|max)
+      for ((i = 0; i < ${#lvl}; i++)); do
+        emit "1;3;$(fg "${RAINBOW[$(( (i - off + n * 100) % n ))]}")" "${lvl:$i:1}"
+      done ;;
+    *) emit '3' "$lvl" ;;
+  esac
+}
+# Pace prediction for a rate-limit window. Projects the current burn rate
+# to the reset time. Sets PACE_TXT and PACE_COL (empty when too early).
+pace() {
+  local p r w elapsed
+  PACE_TXT=''; PACE_COL=''
+  [ "$SHOW_PACE" = 1 ] || return
+  p="$(int "$1")"; r="$(int "$2")"; w="$3"
+  [ "$r" -gt "$NOW" ] || return
+  elapsed=$(( NOW - (r - w) ))
+  [ "$elapsed" -gt 0 ] || return
+  [ "$elapsed" -gt "$w" ] && elapsed="$w"
+  if [ "$p" -ge 100 ]; then PACE_TXT='✗ limit reached'; PACE_COL="$C_BAD"; return; fi
+  # Too early in the window for a stable estimate.
+  if [ "$elapsed" -lt $((w / 20)) ] && [ "$p" -lt 25 ]; then return; fi
+  if [ $((p * w)) -le $((100 * elapsed)) ]; then
+    PACE_TXT='✓ on pace'; PACE_COL="$C_OK"
+  else
+    PACE_TXT="⚠ runs out $(friendly_time $(( NOW + (100 - p) * elapsed / p )))"
+    PACE_COL="$C_BAD"
+  fi
+}
+# One meter row: "<label>  <bar>  <pct>%  ↻ <countdown> → <time>  <pace>".
+# Args: label, percentage, color, reset timestamp (optional), window seconds.
+meter() {
+  local label="$1" pct="$2" c="$3" reset="${4:-}" window="${5:-0}" st rel
+  st="$(pulse "$pct")$(fg "$c")"
+  emit "1;$(fg "$c")" "$(printf '%-8s' "$label")"
+  emit "$st" "$(bar "$pct")"
+  emit "$st" "$(printf '  %3s%%' "$(int "$pct")")"
+  [ -n "$reset" ] || return 0
+  rel="$(rel_time "$reset")"
+  [ -n "$rel" ] || return 0
+  emit "$(fg "$c")" "  ↻ $rel → $(friendly_time "$reset")"
+  pace "$pct" "$reset" "$window"
+  if [ -n "$PACE_TXT" ]; then emit "$(fg "$PACE_COL")" "  $PACE_TXT"; fi
+}
+# Branch and number of changed files from a single `git status` call.
+git_info() {
+  local out first
+  GIT_BRANCH=''; GIT_CHANGES=0
+  [ -n "$J_DIR" ] && command -v git >/dev/null 2>&1 || return
+  out="$(git -C "$J_DIR" status --porcelain=v1 -b 2>/dev/null)" || return
+  first="${out%%$'\n'*}"; first="${first#\#\# }"
+  case "$first" in
+    'No commits yet on '*) GIT_BRANCH="${first#No commits yet on }" ;;
+    'HEAD (no branch)'*) GIT_BRANCH="$(git -C "$J_DIR" rev-parse --short HEAD 2>/dev/null)" ;;
+    *) GIT_BRANCH="${first%%...*}"; GIT_BRANCH="${GIT_BRANCH%% *}" ;;
+  esac
+  GIT_CHANGES=$(( $(printf '%s\n' "$out" | wc -l) - 1 ))
+}
+# "~" for the home folder, otherwise the last path segment (max 24 chars).
+folder() {
+  local d="${J_DIR%/}" name
+  [ -n "$d" ] || return
+  if [ "$d" = "${HOME%/}" ]; then printf '~'; return; fi
+  name="${d##*/}"
+  if [ "${#name}" -gt 24 ]; then name="${name:0:23}…"; fi
+  printf '%s' "$name"
+}
+
+# ------------------------------------------------------------------ line 1
+# Where you are: model ▶ effort ▶ folder + git
+emit "1;$(fg "$C_MODEL")" "$J_MODEL"
+if [ "$J_THINKING" = true ] && [ -n "$J_EFFORT" ]; then
+  emit '' ' ▶ '
+  effort "$J_EFFORT"
+fi
+if [ "$J_FAST" = true ]; then
+  emit '' ' '
+  emit '48;2;140;0;0' '⚡fast'
+fi
+DIR_NAME=''
+[ "$SHOW_FOLDER" = 1 ] && DIR_NAME="$(folder)"
+GIT_BRANCH=''
+[ "$SHOW_GIT" = 1 ] && git_info
+if [ -n "$DIR_NAME" ] || [ -n "$GIT_BRANCH" ]; then emit '' ' ▶'; fi
+if [ -n "$DIR_NAME" ]; then emit "1;$(fg "$C_FOLDER")" " ⌂ $DIR_NAME"; fi
+if [ -n "$GIT_BRANCH" ]; then
+  emit '' " ⎇ $GIT_BRANCH "
+  if [ "$GIT_CHANGES" -eq 0 ]; then emit "$(fg "$C_OK")" '✓ clean'
+  elif [ "$GIT_CHANGES" -eq 1 ]; then emit "$(fg "$C_WARN")" '● 1 change'
+  else emit "$(fg "$C_WARN")" "● $GIT_CHANGES changes"; fi
 fi
 
-# Line 2: context meter ▶ session stats (lines changed, time, cost)
+# ------------------------------------------------------------------ line 2
+# Context window ▶ session stats (lines changed, time, cost)
 printf '\n'
-__meter 'ctx' "$(__field 'context_window.used_percentage')" '█' '38;2;132;132;131'
-__emit '' '  ▶ '
-__emit '38;2;157;204;47' "+$(__norm_int "$(__field 'cost.total_lines_added')")"
-__emit '38;2;255;72;72' " -$(__norm_int "$(__field 'cost.total_lines_removed')")"
-__v="$(__field 'cost.total_duration_ms')"
-__emit '2' " · $(__dur_human "$(__norm_int "${__v:-0}")")"
-__v="$(__field 'cost.total_cost_usd')"
-__emit '2' " · $(__cost_fmt "${__v:-0}" 2)"
-
-# Lines 3-4: 5-hour and weekly limits. Skipped when Claude Code doesn't
-# report them (e.g. API-key users).
-__v="$(__field 'rate_limits.five_hour.used_percentage')"
-if [ -n "$__v" ]; then
-  printf '\n'
-  __meter '5hr' "$__v" '▓' "$(__pct_color "$__v")" "$(__field 'rate_limits.five_hour.resets_at')"
+__c="$C_MUTED"; [ "$(int "$J_CTX")" -ge 80 ] && __c="$C_BAD"
+meter 'ctx' "$J_CTX" "$__c"
+if [ "$SHOW_SESSION" = 1 ]; then
+  emit '' '  ▶ '
+  emit "$(fg "$C_OK")" "+$(int "$J_ADDED")"
+  emit "$(fg "$C_BAD")" " -$(int "$J_REMOVED")"
+  emit '2' " · $(duration "$J_DURATION")"
+  emit '2' " · $(printf '$%.2f' "${J_COST:-0}" 2>/dev/null || printf '$0.00')"
 fi
-__v="$(__field 'rate_limits.seven_day.used_percentage')"
-if [ -n "$__v" ]; then
-  printf '\n'
-  __meter 'weekly' "$__v" '█' "$(__pct_color "$__v")" "$(__field 'rate_limits.seven_day.resets_at')"
+
+# --------------------------------------------------------------- lines 3-4
+# Plan limits. Skipped when Claude Code doesn't report them (API-key users).
+if [ "$SHOW_LIMITS" = 1 ]; then
+  if [ -n "$J_5H" ]; then
+    printf '\n'
+    meter '5hr' "$J_5H" "$(pct_color "$J_5H")" "$J_5H_RESET" 18000
+  fi
+  if [ -n "$J_7D" ]; then
+    printf '\n'
+    meter 'weekly' "$J_7D" "$(pct_color "$J_7D")" "$J_7D_RESET" 604800
+  fi
 fi
 
 exit 0

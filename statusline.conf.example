@@ -1,0 +1,23 @@
+# claude-code-statusline settings
+# Copy to ~/.claude/statusline.conf and edit. Changes apply on the next
+# refresh; no restart needed. Environment variables with the same names win.
+
+# Color theme: default, catppuccin, dracula, nord, gruvbox, tokyonight
+STATUSLINE_THEME=default
+
+# Bar style: blocks █░  shade ▓░  dots ●○  slim ▰▱  line ━─
+STATUSLINE_BAR=blocks
+
+# Clock for reset times: 12 (5:32am) or 24 (05:32)
+STATUSLINE_CLOCK=12
+
+# Animations: rainbow for xhigh/max effort, pulse when a limit is at 90%+
+# (1 = on, 0 = off)
+STATUSLINE_ANIMATE=1
+
+# Sections (1 = show, 0 = hide)
+STATUSLINE_SHOW_FOLDER=1
+STATUSLINE_SHOW_GIT=1
+STATUSLINE_SHOW_SESSION=1
+STATUSLINE_SHOW_LIMITS=1
+STATUSLINE_SHOW_PACE=1
