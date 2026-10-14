@@ -19,21 +19,28 @@ SETTINGS="$DIR/settings.json"
 MARKER="$DIR/statusline.plugin"          # exists while the plugin manages $SL
 PREVIOUS="$DIR/statusline.previous.json" # the statusLine before setup
 THEMES="default catppuccin dracula nord gruvbox tokyonight"
+# Run through bash explicitly: works on Windows (Git Bash) and without +x.
+CMD="bash \"$SL\""
+# Windows often has "python" rather than "python3", or a python3 stub.
+PY=python3
+for p in python3 python; do
+  if "$p" -c 'import json' >/dev/null 2>&1; then PY="$p"; break; fi
+done
 
 # Read or write settings.json with jq, falling back to python3.
 current_command() {
   [ -f "$SETTINGS" ] || return 0
   if command -v jq >/dev/null 2>&1; then
-    jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true
+    jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null | tr -d '\r' || true
   else
-    S="$SETTINGS" python3 -c 'import json,os;print((json.load(open(os.environ["S"])).get("statusLine") or {}).get("command",""))' 2>/dev/null || true
+    S="$SETTINGS" "$PY" -c 'import json,os;print((json.load(open(os.environ["S"])).get("statusLine") or {}).get("command",""))' 2>/dev/null || true
   fi
 }
 save_previous() {
   if command -v jq >/dev/null 2>&1; then
     jq '.statusLine // null' "$SETTINGS" > "$PREVIOUS"
   else
-    S="$SETTINGS" python3 -c 'import json,os;print(json.dumps(json.load(open(os.environ["S"])).get("statusLine")))' > "$PREVIOUS"
+    S="$SETTINGS" "$PY" -c 'import json,os;print(json.dumps(json.load(open(os.environ["S"])).get("statusLine")))' > "$PREVIOUS"
   fi
 }
 # set_status_line '<json value or null>'
@@ -42,14 +49,17 @@ set_status_line() {
   if command -v jq >/dev/null 2>&1; then
     jq --argjson v "$1" 'if $v == null then del(.statusLine) else .statusLine = $v end' "$SETTINGS" > "$tmp"
   else
-    S="$SETTINGS" V="$1" python3 -c 'import json,os
+    S="$SETTINGS" V="$1" "$PY" -c 'import json,os
 d=json.load(open(os.environ["S"]));v=json.loads(os.environ["V"])
 d.pop("statusLine",None) if v is None else d.__setitem__("statusLine",v)
 print(json.dumps(d,indent=2))' > "$tmp"
   fi
   mv "$tmp" "$SETTINGS"
 }
-is_on() { [ -f "$MARKER" ] && [ "$(current_command)" = "$SL" ]; }
+is_on() {
+  [ -f "$MARKER" ] || return 1
+  case "$(current_command)" in "$CMD"|"$SL") return 0 ;; *) return 1 ;; esac
+}
 
 install_copy() {
   # rm first so a symlink at $SL is replaced, never written through.
@@ -74,7 +84,7 @@ setup() {
   if [ -e "$SL" ] || [ -L "$SL" ]; then backup="$SL.bak.$(date +%s)"; mv "$SL" "$backup"; fi
   install_copy
   [ -f "$CONF" ] || cp "$ROOT/statusline.conf.example" "$CONF"
-  set_status_line "{\"type\":\"command\",\"command\":$(printf '%s' "$SL" | json_string),\"refreshInterval\":1}"
+  set_status_line "{\"type\":\"command\",\"command\":$(printf '%s' "$CMD" | json_string),\"refreshInterval\":1}"
   printf '%s' "$backup" > "$MARKER"
   echo "claude-code-statusline is on. It shows up after Claude's next reply."
   echo "Settings: $CONF"
@@ -132,7 +142,7 @@ sync() {
 
 json_string() {
   if command -v jq >/dev/null 2>&1; then jq -Rs .
-  else python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'; fi
+  else "$PY" -c 'import json,sys;print(json.dumps(sys.stdin.read()))'; fi
 }
 
 case "${1:-status}" in

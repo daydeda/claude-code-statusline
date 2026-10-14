@@ -82,6 +82,8 @@ Edit `~/.claude/statusline.conf`. Changes show up on the next refresh; no restar
 | `STATUSLINE_THEME` | `default` `catppuccin` `dracula` `nord` `gruvbox` `tokyonight` | `default` |
 | `STATUSLINE_BAR` | `blocks` `shade` `dots` `slim` `line` | `blocks` |
 | `STATUSLINE_CLOCK` | `12` (5:10pm) or `24` (17:10) | `12` |
+| `STATUSLINE_COLORS` | `truecolor` or `256` (for terminals without 24-bit color) | `truecolor` |
+| `STATUSLINE_ASCII` | `1` swaps symbols and bars for plain ASCII (`>`, `git:`, `#---`) | `0` |
 | `STATUSLINE_ANIMATE` | `1` on, `0` off (rainbow and pulse) | `1` |
 | `STATUSLINE_SHOW_FOLDER` | `1` / `0` | `1` |
 | `STATUSLINE_SHOW_GIT` | `1` / `0` | `1` |
@@ -90,6 +92,18 @@ Edit `~/.claude/statusline.conf`. Changes show up on the next refresh; no restar
 | `STATUSLINE_SHOW_PACE` | `1` / `0` (pace prediction) | `1` |
 
 Environment variables with the same names override the file. The config is read as plain `KEY=value` lines and never executed.
+
+## Compatibility
+
+| Platform | Status |
+| --- | --- |
+| macOS (bash 3.2 and newer) | ✅ Tested |
+| Linux: Ubuntu 24.04, Debian 12 (no `jq`, Python fallback), Alpine 3.20 (BusyBox) | ✅ Tested |
+| Windows with Git Bash | 🧪 Experimental: Windows paths, `\r\n` output and `python` vs `python3` are handled, but it hasn't been run on Windows yet. Reports welcome! |
+| Windows without Git Bash | ❌ Needs bash. Claude Code runs commands in PowerShell there. |
+| Terminals inside VS Code, Cursor and JetBrains | Should work like any terminal (they support 24-bit color). |
+
+If colors look wrong, set `STATUSLINE_COLORS=256`. If you see boxes or question marks instead of symbols, set `STATUSLINE_ASCII=1`.
 
 ## How the pace prediction works
 

@@ -9,7 +9,7 @@
     {
       "name": "pace-statusline",
       "description": "Everything in 4 lines: model and effort, folder and git, context and cost, 5-hour and weekly limits with reset times and a pace prediction. 6 themes. /pace-statusline setup turns it on.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "source": "./"
     }
   ]

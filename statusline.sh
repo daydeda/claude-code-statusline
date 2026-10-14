@@ -14,7 +14,7 @@ if [ -f "$__CONF" ]; then
     __line="${__line%%#*}"
     __line="$(printf '%s' "$__line" | tr -d ' \t"'\''')"
     case "$__line" in
-      STATUSLINE_THEME=*|STATUSLINE_BAR=*|STATUSLINE_CLOCK=*|STATUSLINE_ANIMATE=*|STATUSLINE_SHOW_*=*) ;;
+      STATUSLINE_THEME=*|STATUSLINE_BAR=*|STATUSLINE_CLOCK=*|STATUSLINE_ANIMATE=*|STATUSLINE_SHOW_*=*|STATUSLINE_ASCII=*|STATUSLINE_COLORS=*) ;;
       *) continue ;;
     esac
     __key="${__line%%=*}"
@@ -31,6 +31,20 @@ SHOW_GIT="${STATUSLINE_SHOW_GIT:-1}"
 SHOW_SESSION="${STATUSLINE_SHOW_SESSION:-1}"
 SHOW_LIMITS="${STATUSLINE_SHOW_LIMITS:-1}"
 SHOW_PACE="${STATUSLINE_SHOW_PACE:-1}"
+ASCII="${STATUSLINE_ASCII:-0}"
+COLORS="${STATUSLINE_COLORS:-truecolor}"
+
+# Symbols. STATUSLINE_ASCII=1 swaps them for plain ASCII, for consoles and
+# fonts that lack them.
+if [ "$ASCII" = 1 ]; then
+  G_SEP='>'; G_DIR='dir:'; G_BRANCH='git:'; G_CLEAN='ok'; G_DIRTY='*'
+  G_RESET='reset in'; G_AT='at'; G_DOT='|'; G_OK='ok'; G_WARN='!'
+  G_FULL='x'; G_FAST='FAST'; G_MORE='...'
+else
+  G_SEP='▶'; G_DIR='⌂'; G_BRANCH='⎇'; G_CLEAN='✓ clean'; G_DIRTY='●'
+  G_RESET='↻'; G_AT='→'; G_DOT='·'; G_OK='✓'; G_WARN='⚠'
+  G_FULL='✗'; G_FAST='⚡fast'; G_MORE='…'
+fi
 
 # ------------------------------------------------------------------ themes
 # Colors are 24-bit "R;G;B". RAINBOW drives the xhigh/max effort animation.
@@ -67,7 +81,9 @@ case "$THEME" in
     RAINBOW=('255;72;72' '255;165;0' '255;230;0' '157;204;47' '0;190;255' '120;100;255' '220;90;255') ;;
 esac
 
+[ "$ASCII" = 1 ] && BAR_STYLE=ascii
 case "$BAR_STYLE" in
+  ascii) BAR_ON='#'; BAR_OFF='-' ;;
   shade) BAR_ON='▓'; BAR_OFF='░' ;;
   dots)  BAR_ON='●'; BAR_OFF='○' ;;
   slim)  BAR_ON='▰'; BAR_OFF='▱' ;;
@@ -97,7 +113,15 @@ if command -v jq >/dev/null 2>&1; then
     "J_7D_RESET=\(.rate_limits.seven_day.resets_at | s | @sh)"
   ' 2>/dev/null)"
 else
-  __vars="$(INPUT_JSON="$INPUT" python3 - <<'PYEOF' 2>/dev/null
+  # "python3" may be missing (Windows often has "python") or a stub that only
+  # opens the Microsoft Store, so use the first one that actually runs.
+  __PY=''; __vars=''
+  for __p in python3 python; do
+    if "$__p" -c 'import json, shlex' >/dev/null 2>&1; then __PY="$__p"; break; fi
+  done
+fi
+if [ -n "${__PY:-}" ]; then
+  __vars="$(INPUT_JSON="$INPUT" "$__PY" - <<'PYEOF' 2>/dev/null
 import json, os, shlex
 try:
     d = json.loads(os.environ.get('INPUT_JSON') or '{}')
@@ -133,13 +157,26 @@ PYEOF
 fi
 J_MODEL='' J_THINKING='' J_EFFORT='' J_FAST='' J_DIR='' J_CTX='' J_ADDED='' J_REMOVED=''
 J_DURATION='' J_COST='' J_5H='' J_5H_RESET='' J_7D='' J_7D_RESET=''
-eval "$__vars"
+# jq and Python on Windows end lines with \r\n; drop the \r before eval.
+eval "${__vars//$'\r'/}"
 
 # STATUSLINE_CLOCK_OVERRIDE pins "now" for tests and preview rendering.
 NOW="${STATUSLINE_CLOCK_OVERRIDE:-$(date +%s)}"
 
 # ----------------------------------------------------------------- helpers
-fg() { printf '38;2;%s' "$1"; }
+# Color escapes from "R;G;B". STATUSLINE_COLORS=256 maps to the nearest
+# xterm-256 color for terminals without 24-bit color.
+__color() {
+  if [ "$COLORS" = 256 ]; then
+    local r g b
+    IFS=';' read -r r g b <<< "$2"
+    printf '%s;5;%d' "$1" $(( 16 + 36 * ((r * 5 + 127) / 255) + 6 * ((g * 5 + 127) / 255) + (b * 5 + 127) / 255 ))
+  else
+    printf '%s;2;%s' "$1" "$2"
+  fi
+}
+fg() { __color 38 "$1"; }
+bg() { __color 48 "$1"; }
 emit() {
   if [ -n "$1" ]; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi
 }
@@ -238,13 +275,13 @@ pace() {
   elapsed=$(( NOW - (r - w) ))
   [ "$elapsed" -gt 0 ] || return
   [ "$elapsed" -gt "$w" ] && elapsed="$w"
-  if [ "$p" -ge 100 ]; then PACE_TXT='✗ limit reached'; PACE_COL="$C_BAD"; return; fi
+  if [ "$p" -ge 100 ]; then PACE_TXT="$G_FULL limit reached"; PACE_COL="$C_BAD"; return; fi
   # Too early in the window for a stable estimate.
   if [ "$elapsed" -lt $((w / 20)) ] && [ "$p" -lt 25 ]; then return; fi
   if [ $((p * w)) -le $((100 * elapsed)) ]; then
-    PACE_TXT='✓ on pace'; PACE_COL="$C_OK"
+    PACE_TXT="$G_OK on pace"; PACE_COL="$C_OK"
   else
-    PACE_TXT="⚠ runs out $(friendly_time $(( NOW + (100 - p) * elapsed / p )))"
+    PACE_TXT="$G_WARN runs out $(friendly_time $(( NOW + (100 - p) * elapsed / p )))"
     PACE_COL="$C_BAD"
   fi
 }
@@ -259,7 +296,7 @@ meter() {
   [ -n "$reset" ] || return 0
   rel="$(rel_time "$reset")"
   [ -n "$rel" ] || return 0
-  emit "$(fg "$c")" "  ↻ $rel → $(friendly_time "$reset")"
+  emit "$(fg "$c")" "  $G_RESET $rel $G_AT $(friendly_time "$reset")"
   pace "$pct" "$reset" "$window"
   if [ -n "$PACE_TXT" ]; then emit "$(fg "$PACE_COL")" "  $PACE_TXT"; fi
 }
@@ -280,10 +317,12 @@ git_info() {
 # "~" for the home folder, otherwise the last path segment (max 24 chars).
 folder() {
   local d="${J_DIR%/}" name
+  d="${d%\\}"
   [ -n "$d" ] || return
-  if [ "$d" = "${HOME%/}" ]; then printf '~'; return; fi
-  name="${d##*/}"
-  if [ "${#name}" -gt 24 ]; then name="${name:0:23}…"; fi
+  # USERPROFILE: on Windows the JSON path is C:\Users\you, not $HOME.
+  if [ "$d" = "${HOME%/}" ] || [ "$d" = "${USERPROFILE:-}" ]; then printf '~'; return; fi
+  name="${d##*/}"; name="${name##*\\}"
+  if [ "${#name}" -gt 24 ]; then name="${name:0:23}$G_MORE"; fi
   printf '%s' "$name"
 }
 
@@ -291,24 +330,24 @@ folder() {
 # Where you are: model ▶ effort ▶ folder + git
 emit "1;$(fg "$C_MODEL")" "$J_MODEL"
 if [ "$J_THINKING" = true ] && [ -n "$J_EFFORT" ]; then
-  emit '' ' ▶ '
+  emit '' " $G_SEP "
   effort "$J_EFFORT"
 fi
 if [ "$J_FAST" = true ]; then
   emit '' ' '
-  emit '48;2;140;0;0' '⚡fast'
+  emit "$(bg '140;0;0')" "$G_FAST"
 fi
 DIR_NAME=''
 [ "$SHOW_FOLDER" = 1 ] && DIR_NAME="$(folder)"
 GIT_BRANCH=''
 [ "$SHOW_GIT" = 1 ] && git_info
-if [ -n "$DIR_NAME" ] || [ -n "$GIT_BRANCH" ]; then emit '' ' ▶'; fi
-if [ -n "$DIR_NAME" ]; then emit "1;$(fg "$C_FOLDER")" " ⌂ $DIR_NAME"; fi
+if [ -n "$DIR_NAME" ] || [ -n "$GIT_BRANCH" ]; then emit '' " $G_SEP"; fi
+if [ -n "$DIR_NAME" ]; then emit "1;$(fg "$C_FOLDER")" " $G_DIR $DIR_NAME"; fi
 if [ -n "$GIT_BRANCH" ]; then
-  emit '' " ⎇ $GIT_BRANCH "
-  if [ "$GIT_CHANGES" -eq 0 ]; then emit "$(fg "$C_OK")" '✓ clean'
-  elif [ "$GIT_CHANGES" -eq 1 ]; then emit "$(fg "$C_WARN")" '● 1 change'
-  else emit "$(fg "$C_WARN")" "● $GIT_CHANGES changes"; fi
+  emit '' " $G_BRANCH $GIT_BRANCH "
+  if [ "$GIT_CHANGES" -eq 0 ]; then emit "$(fg "$C_OK")" "$G_CLEAN"
+  elif [ "$GIT_CHANGES" -eq 1 ]; then emit "$(fg "$C_WARN")" "$G_DIRTY 1 change"
+  else emit "$(fg "$C_WARN")" "$G_DIRTY $GIT_CHANGES changes"; fi
 fi
 
 # ------------------------------------------------------------------ line 2
@@ -317,11 +356,11 @@ printf '\n'
 __c="$C_MUTED"; [ "$(int "$J_CTX")" -ge 80 ] && __c="$C_BAD"
 meter 'ctx' "$J_CTX" "$__c"
 if [ "$SHOW_SESSION" = 1 ]; then
-  emit '' '  ▶ '
+  emit '' "  $G_SEP "
   emit "$(fg "$C_OK")" "+$(int "$J_ADDED")"
   emit "$(fg "$C_BAD")" " -$(int "$J_REMOVED")"
-  emit '2' " · $(duration "$J_DURATION")"
-  emit '2' " · $(printf '$%.2f' "${J_COST:-0}" 2>/dev/null || printf '$0.00')"
+  emit '2' " $G_DOT $(duration "$J_DURATION")"
+  emit '2' " $G_DOT $(printf '$%.2f' "${J_COST:-0}" 2>/dev/null || printf '$0.00')"
 fi
 
 # --------------------------------------------------------------- lines 3-4

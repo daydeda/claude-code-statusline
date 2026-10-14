@@ -11,6 +11,13 @@ STATUSLINE_BAR=blocks
 # Clock for reset times: 12 (5:32am) or 24 (05:32)
 STATUSLINE_CLOCK=12
 
+# Colors: truecolor (24-bit) or 256 for terminals without 24-bit color
+# (older macOS Terminal.app, tmux without RGB support)
+STATUSLINE_COLORS=truecolor
+
+# Plain ASCII symbols and bars, for consoles or fonts missing ▶ ⌂ ⎇ ↻ (1 = on)
+STATUSLINE_ASCII=0
+
 # Animations: rainbow for xhigh/max effort, pulse when a limit is at 90%+
 # (1 = on, 0 = off)
 STATUSLINE_ANIMATE=1
