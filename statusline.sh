@@ -31,6 +31,7 @@ SHOW_GIT="${STATUSLINE_SHOW_GIT:-1}"
 SHOW_SESSION="${STATUSLINE_SHOW_SESSION:-1}"
 SHOW_LIMITS="${STATUSLINE_SHOW_LIMITS:-1}"
 SHOW_PACE="${STATUSLINE_SHOW_PACE:-1}"
+SHOW_SESSION_LINES="${STATUSLINE_SHOW_SESSION_LINES:-0}"
 ASCII="${STATUSLINE_ASCII:-0}"
 COLORS="${STATUSLINE_COLORS:-truecolor}"
 
@@ -303,7 +304,7 @@ meter() {
 # Branch and number of changed files from a single `git status` call.
 git_info() {
   local out first
-  GIT_BRANCH=''; GIT_CHANGES=0
+  GIT_BRANCH=''; GIT_CHANGES=0; GIT_ADDED=0; GIT_REMOVED=0
   [ -n "$J_DIR" ] && command -v git >/dev/null 2>&1 || return
   out="$(git -C "$J_DIR" status --porcelain=v1 -b 2>/dev/null)" || return
   first="${out%%$'\n'*}"; first="${first#\#\# }"
@@ -313,6 +314,18 @@ git_info() {
     *) GIT_BRANCH="${first%%...*}"; GIT_BRANCH="${GIT_BRANCH%% *}" ;;
   esac
   GIT_CHANGES=$(( $(printf '%s\n' "$out" | wc -l) - 1 ))
+  # Uncommitted lines (staged + unstaged) in tracked files; they reset to 0 on
+  # commit. Untracked files count as changes but have no line counts yet.
+  GIT_ADDED=0; GIT_REMOVED=0
+  [ "$GIT_CHANGES" -gt 0 ] || return 0
+  local stats
+  if git -C "$J_DIR" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    stats="$(git -C "$J_DIR" diff --numstat HEAD 2>/dev/null)"
+  else
+    stats="$(git -C "$J_DIR" diff --numstat --cached 2>/dev/null)"
+  fi
+  # Binary files report "-"; awk treats them as 0.
+  read -r GIT_ADDED GIT_REMOVED <<< "$(printf '%s\n' "$stats" | awk '{a += $1; r += $2} END {printf "%d %d", a, r}')"
 }
 # "~" for the home folder, otherwise the last path segment (max 24 chars).
 folder() {
@@ -348,18 +361,26 @@ if [ -n "$GIT_BRANCH" ]; then
   if [ "$GIT_CHANGES" -eq 0 ]; then emit "$(fg "$C_OK")" "$G_CLEAN"
   elif [ "$GIT_CHANGES" -eq 1 ]; then emit "$(fg "$C_WARN")" "$G_DIRTY 1 change"
   else emit "$(fg "$C_WARN")" "$G_DIRTY $GIT_CHANGES changes"; fi
+  if [ "$GIT_ADDED" -gt 0 ] || [ "$GIT_REMOVED" -gt 0 ]; then
+    emit "$(fg "$C_OK")" " +$GIT_ADDED"
+    emit "$(fg "$C_BAD")" " -$GIT_REMOVED"
+  fi
 fi
 
 # ------------------------------------------------------------------ line 2
-# Context window ▶ session stats (lines changed, time, cost)
+# Context window ▶ session stats (time, cost; lines Claude changed if enabled)
 printf '\n'
 __c="$C_MUTED"; [ "$(int "$J_CTX")" -ge 80 ] && __c="$C_BAD"
 meter 'ctx' "$J_CTX" "$__c"
 if [ "$SHOW_SESSION" = 1 ]; then
   emit '' "  $G_SEP "
-  emit "$(fg "$C_OK")" "+$(int "$J_ADDED")"
-  emit "$(fg "$C_BAD")" " -$(int "$J_REMOVED")"
-  emit '2' " $G_DOT $(duration "$J_DURATION")"
+  if [ "$SHOW_SESSION_LINES" = 1 ]; then
+    emit '2' 'session '
+    emit "$(fg "$C_OK")" "+$(int "$J_ADDED")"
+    emit "$(fg "$C_BAD")" " -$(int "$J_REMOVED")"
+    emit '2' " $G_DOT "
+  fi
+  emit '2' "$(duration "$J_DURATION")"
   emit '2' " $G_DOT $(printf '$%.2f' "${J_COST:-0}" 2>/dev/null || printf '$0.00')"
 fi
 

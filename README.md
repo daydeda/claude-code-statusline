@@ -16,8 +16,8 @@ curl -fsSL https://raw.githubusercontent.com/daydeda/claude-code-statusline/main
 - **Limits that warn you:** the 5-hour and weekly bars turn orange at 50% and red at 80%. From 90% the bar **pulses**, so you notice even when you're not looking at it.
 - **Human-friendly reset times:** `↻ 1h10m → today 5:10pm`, `↻ 20h10m → tomorrow 1:00am`, `↻ 2d 7h → Fri 11:10pm`.
 - **Effort at a glance:** `low` green, `medium` yellow, `high` red, and an **animated rainbow** for `xhigh` and `max`.
-- **Where you are:** folder name (`⌂ my-app`) and git state in plain words (`⎇ main ✓ clean` or `● 3 changes`).
-- **Session summary:** context window bar, lines added and removed, elapsed time and cost.
+- **Where you are:** folder name (`⌂ my-app`) and git state in plain words: `⎇ main ✓ clean`, or `● 3 changes +40 -5` with the lines you haven't committed yet. They reset when you commit. (Brand-new files count as changes; their lines count once you `git add` them.)
+- **Session summary:** context window bar, elapsed time and cost.
 - **6 themes and 5 bar styles**, switchable with one line of config.
 - **Fast and light:** one Bash script (works with the bash 3.2 on macOS), one `jq` call and one `git` call per refresh, about 0.1s.
 
@@ -87,7 +87,8 @@ Edit `~/.claude/statusline.conf`. Changes show up on the next refresh; no restar
 | `STATUSLINE_ANIMATE` | `1` on, `0` off (rainbow and pulse) | `1` |
 | `STATUSLINE_SHOW_FOLDER` | `1` / `0` | `1` |
 | `STATUSLINE_SHOW_GIT` | `1` / `0` | `1` |
-| `STATUSLINE_SHOW_SESSION` | `1` / `0` (lines changed, time, cost) | `1` |
+| `STATUSLINE_SHOW_SESSION` | `1` / `0` (time and cost) | `1` |
+| `STATUSLINE_SHOW_SESSION_LINES` | `1` adds every line Claude changed this session (`session +248 -31`). Unlike the git counts, these don't reset on commit | `0` |
 | `STATUSLINE_SHOW_LIMITS` | `1` / `0` (5-hour and weekly rows) | `1` |
 | `STATUSLINE_SHOW_PACE` | `1` / `0` (pace prediction) | `1` |
 

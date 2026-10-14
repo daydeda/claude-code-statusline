@@ -162,9 +162,18 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.path.join(tmp, "my-app")
         os.mkdir(cwd)
+        git = ["git", "-C", cwd, "-c", "user.name=preview", "-c", "user.email=preview@example.com"]
         subprocess.run(["git", "init", "-q", "-b", "main", cwd], check=True)
-        for f in ("app.ts", "auth.ts", "README.md"):
-            Path(cwd, f).write_text("x\n")
+        Path(cwd, "app.ts").write_text("".join("line %d\n" % i for i in range(10)))
+        Path(cwd, "auth.ts").write_text("".join("line %d\n" % i for i in range(8)))
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-qm", "init"], check=True)
+        # Uncommitted work: "● 3 changes +40 -5"
+        Path(cwd, "app.ts").write_text("".join("line %d\n" % i for i in range(3, 10))
+                                       + "".join("new %d\n" % i for i in range(30)))
+        Path(cwd, "auth.ts").write_text("".join("line %d\n" % i for i in range(6))
+                                        + "".join("new %d\n" % i for i in range(10)))
+        Path(cwd, "README.md").write_text("x\n")
         (OUT / "preview.svg").write_text(hero(cwd))
         (OUT / "themes.svg").write_text(themes(cwd))
     print("wrote images/preview.svg and images/themes.svg")
