@@ -31,6 +31,33 @@ Bar styles (`STATUSLINE_BAR`): `blocks` █░ · `shade` ▓░ · `dots` ●�
 
 ## Install
 
+### As a plugin
+
+In Claude Code:
+
+```
+/plugin install pace-statusline --marketplace daydeda/claude-code-statusline
+/pace-statusline setup
+```
+
+Or from your shell:
+
+```bash
+claude plugin marketplace add daydeda/claude-code-statusline
+claude plugin install pace-statusline@claude-code-statusline
+```
+
+then run `/pace-statusline setup` in Claude Code. The plugin keeps the status line up to date when it updates, and adds:
+
+| Command | What it does |
+| --- | --- |
+| `/pace-statusline setup` | Turns it on. Your current status line is saved. |
+| `/pace-statusline theme dracula` | Switches theme. |
+| `/pace-statusline status` | Shows whether it's on and which theme is set. |
+| `/pace-statusline remove` | Puts back the status line you had before. |
+
+### With the one-line installer
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/daydeda/claude-code-statusline/main/install.sh | bash
 ```
@@ -94,7 +121,9 @@ Made a theme or a new section? Open a pull request or share a screenshot in an i
 
 ## Uninstall
 
-Remove the `statusLine` entry from `~/.claude/settings.json` (or restore one of the `.bak` files), then delete `~/.claude/statusline.sh` and `~/.claude/statusline.conf`.
+Plugin: run `/pace-statusline remove`, then `claude plugin uninstall pace-statusline`.
+
+One-line installer: remove the `statusLine` entry from `~/.claude/settings.json` (or restore one of the `.bak` files), then delete `~/.claude/statusline.sh` and `~/.claude/statusline.conf`.
 
 ## License
 
