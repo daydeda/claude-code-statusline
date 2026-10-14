@@ -154,6 +154,16 @@ __git_dirty() {
     printf '0'
   fi
 }
+# Number of files with uncommitted changes (staged, unstaged or untracked).
+__git_changes() {
+  local cwd n
+  cwd="$(__field workspace.current_dir)"
+  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
+  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
+    n="$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  printf '%s' "$(__norm_int "${n:-0}")"
+}
 __emit() {
   local style="$1" text="$2"
   if [ -n "$style" ]; then __sgr "$style"; fi
@@ -229,109 +239,145 @@ __rel_time() {
   now=$(__tick)
   diff=$((t_int - now))
   if [ "$diff" -le 0 ]; then printf ''; return; fi
-  if [ "$diff" -lt 60 ]; then printf 'T-%ds' "$diff"; return; fi
+  if [ "$diff" -ge 86400 ]; then
+    h=$(((diff%86400)/3600))
+    if [ "$h" -gt 0 ]; then printf '%dd %dh' "$((diff/86400))" "$h"
+    else printf '%dd' "$((diff/86400))"; fi
+    return
+  fi
+  if [ "$diff" -lt 60 ]; then printf '%ds' "$diff"; return; fi
   if [ "$diff" -lt 3600 ]; then
     m=$((diff/60)); s=$((diff%60))
-    printf 'T-%dm%02ds' "$m" "$s"; return
+    printf '%dm%02ds' "$m" "$s"; return
   fi
   h=$((diff/3600)); rem=$(((diff%3600)/60))
-  printf 'T-%dh%02dm' "$h" "$rem"
+  printf '%dh%02dm' "$h" "$rem"
 }
+# Format an epoch timestamp with date(1): BSD date first, then GNU date.
+__date_fmt() {
+  date -r "$1" "+$2" 2>/dev/null || date -d "@$1" "+$2" 2>/dev/null
+}
+# Friendly reset time: "today 5:32am", "tomorrow 1:00am" or "Fri 11:08am".
+__friendly_time() {
+  local t="${1%.*}" now day clock
+  case "$t" in ''|*[!0-9]*) printf ''; return ;; esac
+  now="$(__tick)"
+  case "$(__date_fmt "$t" '%Y%m%d')" in
+    "$(__date_fmt "$now" '%Y%m%d')") day='today' ;;
+    "$(__date_fmt "$((now + 86400))" '%Y%m%d')") day='tomorrow' ;;
+    *) day="$(__date_fmt "$t" '%a')"
+       # A week out lands on today's weekday; say "next Thu" to avoid confusion.
+       if [ "$day" = "$(__date_fmt "$now" '%a')" ]; then day="next $day"; fi ;;
+  esac
+  clock="$(__date_fmt "$t" '%I:%M%p' | tr '[:upper:]' '[:lower:]')"
+  printf '%s %s' "$day" "${clock#0}"
+}
+# Countdown plus reset time, e.g. "↻ 2d 7h → Fri 11:08am".
+__reset_info() {
+  local rel
+  rel="$(__rel_time "$1")"
+  [ -z "$rel" ] && return
+  printf '↻ %s → %s' "$rel" "$(__friendly_time "$1")"
+}
+# Usage color: green below 50%, orange from 50%, red from 80%.
+__pct_color() {
+  local p
+  p="$(__norm_int "$1")"
+  if [ "$p" -ge 80 ]; then printf '38;2;255;72;72'
+  elif [ "$p" -ge 50 ]; then printf '38;2;255;165;0'
+  else printf '38;2;157;204;47'; fi
+}
+# Effort colors: low green, medium yellow, high red, xhigh/max rainbow.
+# The rainbow shifts one step per second; with statusLine.refreshInterval=1
+# in settings.json it appears to flow across the text.
+__effort() {
+  local lvl="$1" i c n off
+  local rainbow=('255;72;72' '255;165;0' '255;230;0' '157;204;47' '0;190;255' '120;100;255' '220;90;255')
+  n=${#rainbow[@]}
+  off=$(( $(__tick) % n ))
+  case "$(printf '%s' "$lvl" | tr '[:upper:]' '[:lower:]')" in
+    low) __emit '3;38;2;157;204;47' "$lvl" ;;
+    medium) __emit '3;38;2;255;230;0' "$lvl" ;;
+    high) __emit '3;38;2;255;72;72' "$lvl" ;;
+    xhigh|max)
+      for ((i=0; i<${#lvl}; i++)); do
+        c="${rainbow[$(( (i - off + n * 100) % n ))]}"
+        __emit "1;3;38;2;$c" "${lvl:$i:1}"
+      done ;;
+    *) __emit '3' "$lvl" ;;
+  esac
+}
+# One meter row: "<label>  <bar>  <pct>%  <reset info>".
+# Args: label, percentage, bar char, color, reset timestamp (optional).
+__meter() {
+  local label="$1" pct="$2" ch="$3" color="$4" reset="${5:-}" info
+  __emit "1;$color" "$(printf '%-8s' "$label")"
+  __emit "$color" "$(__bar "$pct" 10 "$ch" '░')"
+  __emit "$color" "$(printf '  %3s%%' "$(__norm_int "$pct")")"
+  info="$(__reset_info "$reset")"
+  if [ -n "$info" ]; then __emit "$color" "  $info"; fi
+}
+
+# Current folder name: "~" for the home folder, otherwise the last path
+# segment, cut to 24 characters.
+__folder() {
+  local cwd
+  cwd="$(__field workspace.current_dir)"
+  if [ -z "$cwd" ]; then cwd="$(__field cwd)"; fi
+  cwd="${cwd%/}"
+  if [ -z "$cwd" ]; then return; fi
+  if [ "$cwd" = "${HOME%/}" ]; then printf '~'; return; fi
+  __truncate "$(__basename "$cwd")" 24
+}
+
+# Line 1: where you are. Model ▶ effort ▶ folder + git
 __v="$(__field 'model.display_name')"
 __emit '1;38;2;222;131;32;49' "$__v"
-__emit '' ' ▶ '
-__repeat_char ' ' 1
 if [ "$(__field 'thinking.enabled')" = 'true' ]; then
-  __v="$(__field 'effort.level')"
-  __emit '3;38;2;157;204;47' "$__v"
+  __emit '' ' ▶ '
+  __effort "$(__field 'effort.level')"
 fi
-__repeat_char ' ' 1
 if [ "$(__field 'fast_mode')" = 'true' ]; then
+  __emit '' ' '
   __emit '48;2;140;0;0' '⚡fast'
 fi
-__emit '' ' ▶ '
+__dir="$(__folder)"
 __out="$(__git_branch)"
-__emit '' "$__out"
-__repeat_char ' ' 1
-if [ "$(__git_dirty)" = '1' ]; then
-  __emit '' '✗'
-else
-  __emit '' '✓'
+if [ -n "$__dir" ] || [ -n "$__out" ]; then __emit '' ' ▶'; fi
+if [ -n "$__dir" ]; then __emit '1;38;2;0;190;255' " ⌂ $__dir"; fi
+if [ -n "$__out" ]; then
+  __emit '' " ⎇ $__out "
+  __n="$(__git_changes)"
+  if [ "$__n" -gt 0 ]; then
+    if [ "$__n" -eq 1 ]; then __emit '38;2;255;165;0' '● 1 change'
+    else __emit '38;2;255;165;0' "● $__n changes"; fi
+  else
+    __emit '38;2;157;204;47' '✓ clean'
+  fi
 fi
-__reset
+
+# Line 2: context meter ▶ session stats (lines changed, time, cost)
 printf '\n'
-__reset
-__reset
-printf '\n'
-__reset
-__emit '2' 'Ɑ'
-__repeat_char ' ' 3
-__emit '2;3' 'ctx'
-__repeat_char ' ' 5
-__v="$(__field 'context_window.used_percentage')"
-__bar_out="$(__bar "$__v" 10 '█' '░')"
-__emit '38;2;132;132;131' "$__bar_out"
-__repeat_char ' ' 2
-__v="$(__field 'context_window.used_percentage')"
-__emit '38;2;132;132;131' "$__v"
-__emit '38;2;132;132;131' '%'
-__reset
-printf '\n'
-__reset
-__emit '' '⏲'
-__repeat_char ' ' 3
-__emit '1;38;2;157;204;47' '5hr'
-__repeat_char ' ' 5
-__v="$(__field 'rate_limits.five_hour.used_percentage')"
-__bar_out="$(__bar "$__v" 10 '▓' '░')"
-__emit '38;2;157;204;47' "$__bar_out"
-__repeat_char ' ' 2
-__v="$(__field 'rate_limits.five_hour.used_percentage')"
-__emit '38;2;157;204;47' "$__v"
-__emit '38;2;157;204;47' '%'
-__reset
-printf '\n'
-__reset
-__emit '' '🗓️'
-__repeat_char ' ' 2
-__emit '1;38;2;157;204;47' 'Weekly'
-__repeat_char ' ' 2
-__v="$(__field 'rate_limits.seven_day.used_percentage')"
-__bar_out="$(__bar "$__v" 10 '█' '░')"
-__emit '38;2;157;204;47' "$__bar_out"
-__repeat_char ' ' 2
-__v="$(__field 'rate_limits.seven_day.used_percentage')"
-__emit '38;2;157;204;47' "$__v"
-__emit '38;2;157;204;47' '%'
-__v="$(__field 'rate_limits.seven_day.resets_at')"
-__out="$(__rel_time "$__v")"
-__emit '38;2;157;204;47' "$__out"
-__reset
-printf '\n'
-__reset
-__reset
-printf '\n'
-__reset
-__emit '' 'session'
-__repeat_char ' ' 5
-__emit '2;38;2;157;204;47' '+'
-__v="$(__field 'cost.total_lines_added')"
-__emit '2;38;2;157;204;47' "$__v"
-__repeat_char ' ' 5
-__emit '2;38;2;255;72;72' '-'
-__v="$(__field 'cost.total_lines_removed')"
-__emit '2;38;2;255;72;72' "$__v"
-__reset
-printf '\n'
-__reset
-__repeat_char ' ' 13
+__meter 'ctx' "$(__field 'context_window.used_percentage')" '█' '38;2;132;132;131'
+__emit '' '  ▶ '
+__emit '38;2;157;204;47' "+$(__norm_int "$(__field 'cost.total_lines_added')")"
+__emit '38;2;255;72;72' " -$(__norm_int "$(__field 'cost.total_lines_removed')")"
 __v="$(__field 'cost.total_duration_ms')"
-__out="$(__dur_human "${__v:-0}")"
-__emit '2' "$__out"
-__repeat_char ' ' 2
+__emit '2' " · $(__dur_human "$(__norm_int "${__v:-0}")")"
 __v="$(__field 'cost.total_cost_usd')"
-__out="$(__cost_fmt "${__v:-0}" 2)"
-__emit '2' "$__out"
+__emit '2' " · $(__cost_fmt "${__v:-0}" 2)"
+
+# Lines 3-4: 5-hour and weekly limits. Skipped when Claude Code doesn't
+# report them (e.g. API-key users).
+__v="$(__field 'rate_limits.five_hour.used_percentage')"
+if [ -n "$__v" ]; then
+  printf '\n'
+  __meter '5hr' "$__v" '▓' "$(__pct_color "$__v")" "$(__field 'rate_limits.five_hour.resets_at')"
+fi
+__v="$(__field 'rate_limits.seven_day.used_percentage')"
+if [ -n "$__v" ]; then
+  printf '\n'
+  __meter 'weekly' "$__v" '█' "$(__pct_color "$__v")" "$(__field 'rate_limits.seven_day.resets_at')"
+fi
 
 exit 0
-
