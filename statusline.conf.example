@@ -31,3 +31,7 @@ STATUSLINE_SHOW_SESSION=1
 STATUSLINE_SHOW_SESSION_LINES=0
 STATUSLINE_SHOW_LIMITS=1
 STATUSLINE_SHOW_PACE=1
+
+# Two rows instead of four: ctx, 5hr, weekly and session stats share one row
+# with short bars. The reset countdown appears only past 50% used.
+# STATUSLINE_COMPACT=1

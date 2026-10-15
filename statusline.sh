@@ -14,7 +14,7 @@ if [ -f "$__CONF" ]; then
     __line="${__line%%#*}"
     __line="$(printf '%s' "$__line" | tr -d ' \t"'\''')"
     case "$__line" in
-      STATUSLINE_THEME=*|STATUSLINE_BAR=*|STATUSLINE_CLOCK=*|STATUSLINE_ANIMATE=*|STATUSLINE_SHOW_*=*|STATUSLINE_ASCII=*|STATUSLINE_COLORS=*) ;;
+      STATUSLINE_THEME=*|STATUSLINE_BAR=*|STATUSLINE_CLOCK=*|STATUSLINE_ANIMATE=*|STATUSLINE_SHOW_*=*|STATUSLINE_ASCII=*|STATUSLINE_COLORS=*|STATUSLINE_COMPACT=*) ;;
       *) continue ;;
     esac
     __key="${__line%%=*}"
@@ -34,17 +34,18 @@ SHOW_PACE="${STATUSLINE_SHOW_PACE:-1}"
 SHOW_SESSION_LINES="${STATUSLINE_SHOW_SESSION_LINES:-0}"
 ASCII="${STATUSLINE_ASCII:-0}"
 COLORS="${STATUSLINE_COLORS:-truecolor}"
+COMPACT="${STATUSLINE_COMPACT:-0}"
 
 # Symbols. STATUSLINE_ASCII=1 swaps them for plain ASCII, for consoles and
 # fonts that lack them.
 if [ "$ASCII" = 1 ]; then
   G_SEP='>'; G_DIR='dir:'; G_BRANCH='git:'; G_CLEAN='ok'; G_DIRTY='*'
   G_RESET='reset in'; G_AT='at'; G_DOT='|'; G_OK='ok'; G_WARN='!'
-  G_FULL='x'; G_FAST='FAST'; G_MORE='...'
+  G_FULL='x'; G_FAST='FAST'; G_MORE='...'; G_ROUTE='->'
 else
   G_SEP='▶'; G_DIR='⌂'; G_BRANCH='⎇'; G_CLEAN='✓ clean'; G_DIRTY='●'
   G_RESET='↻'; G_AT='→'; G_DOT='·'; G_OK='✓'; G_WARN='⚠'
-  G_FULL='✗'; G_FAST='⚡fast'; G_MORE='…'
+  G_FULL='✗'; G_FAST='⚡fast'; G_MORE='…'; G_ROUTE='⇢'
 fi
 
 # ------------------------------------------------------------------ themes
@@ -339,6 +340,37 @@ folder() {
   printf '%s' "$name"
 }
 
+# autoroute (daymods) writes its current route to autoroute.state; show it
+# inline when present. Missing file means the mod is not installed: skip.
+AR_MODEL=''; AR_EFFORT=''; AR_WARN=''; AR_OFF=''
+__AR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autoroute.state"
+if [ -f "$__AR" ]; then
+  while IFS='=' read -r __k __v || [ -n "$__k" ]; do
+    case "$__k" in
+      model) AR_MODEL="$__v" ;; effort) AR_EFFORT="$__v" ;;
+      warn) AR_WARN="$__v" ;; off) AR_OFF=1 ;;
+    esac
+  done < "$__AR"
+fi
+# Compact meter: "<label> <5-cell bar> <pct>%", plus the countdown only when
+# the window is over half used or its pace says you will run out.
+mini() {
+  local label="$1" pct="$2" c="$3" reset="${4:-}" window="${5:-0}" p n i out='' rel
+  p="$(int "$pct")"; [ "$p" -gt 100 ] && p=100
+  n=$(( (p * 5 + 50) / 100 ))
+  for ((i = 0; i < 5; i++)); do
+    if [ "$i" -lt "$n" ]; then out+="$BAR_ON"; else out+="$BAR_OFF"; fi
+  done
+  emit "$(fg "$C_MUTED")" "$label "
+  emit "$(pulse "$pct")$(fg "$c")" "$out $p%"
+  [ -n "$reset" ] && [ "$p" -ge 50 ] || return 0
+  rel="$(rel_time "$reset")"
+  [ -n "$rel" ] || return 0
+  emit "$(fg "$c")" " $G_RESET$rel"
+  pace "$pct" "$reset" "$window"
+  case "$PACE_TXT" in "$G_WARN"*|"$G_FULL"*) emit "$(fg "$PACE_COL")" " $PACE_TXT" ;; esac
+}
+
 # ------------------------------------------------------------------ line 1
 # Where you are: model ▶ effort ▶ folder + git
 emit "1;$(fg "$C_MODEL")" "$J_MODEL"
@@ -350,6 +382,12 @@ if [ "$J_FAST" = true ]; then
   emit '' ' '
   emit "$(bg '140;0;0')" "$G_FAST"
 fi
+if [ -n "$AR_MODEL" ] && [ -z "$AR_OFF" ] && [ "${J_MODEL#"$AR_MODEL"}" = "$J_MODEL" ]; then
+  emit '' " $G_ROUTE "
+  emit "$(fg "$C_MUTED")" "$AR_MODEL"
+  [ -n "$AR_EFFORT" ] && emit "$(fg "$C_MUTED")" "$G_DOT$AR_EFFORT"
+fi
+if [ -n "$AR_WARN" ]; then emit "$(fg "$C_WARN")" " $G_WARN $AR_WARN"; fi
 DIR_NAME=''
 [ "$SHOW_FOLDER" = 1 ] && DIR_NAME="$(folder)"
 GIT_BRANCH=''
@@ -365,6 +403,22 @@ if [ -n "$GIT_BRANCH" ]; then
     emit "$(fg "$C_OK")" " +$GIT_ADDED"
     emit "$(fg "$C_BAD")" " -$GIT_REMOVED"
   fi
+fi
+
+if [ "$COMPACT" = 1 ]; then
+  # ----------------------------------------------------------- compact line 2
+  # ctx, plan limits and session stats on a single row.
+  printf '\n'
+  __c="$C_MUTED"; [ "$(int "$J_CTX")" -ge 80 ] && __c="$C_BAD"
+  mini 'ctx' "$J_CTX" "$__c"
+  if [ "$SHOW_LIMITS" = 1 ]; then
+    if [ -n "$J_5H" ]; then emit '' "  $G_DOT  "; mini '5h' "$J_5H" "$(pct_color "$J_5H")" "$J_5H_RESET" 18000; fi
+    if [ -n "$J_7D" ]; then emit '' "  $G_DOT  "; mini 'wk' "$J_7D" "$(pct_color "$J_7D")" "$J_7D_RESET" 604800; fi
+  fi
+  if [ "$SHOW_SESSION" = 1 ]; then
+    emit '2' "  $G_DOT  $(duration "$J_DURATION") $(printf '$%.2f' "${J_COST:-0}" 2>/dev/null || printf '$0.00')"
+  fi
+  exit 0
 fi
 
 # ------------------------------------------------------------------ line 2
